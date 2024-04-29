@@ -1,15 +1,19 @@
 #!/usr/bin/python3
-""" Database engine """
-
-import os
-from sqlalchemy import create_engine, MetaData
-from sqlalchemy.orm import sessionmaker, scoped_session
-from models.base_model import Base
+"""
+Handles I/O, writing and reading, of JSON for storage of all class instances
+"""
+import json
 from models import base_model, amenity, city, place, review, state, user
+from datetime import datetime
+
+strptime = datetime.strptime
+to_json = base_model.BaseModel.to_json
 
 
-class DBStorage:
-    """handles long term storage of all class instances"""
+class FileStorage:
+    """
+        handles long term storage of all class instances
+    """
     CNC = {
         'BaseModel': base_model.BaseModel,
         'Amenity': amenity.Amenity,
@@ -19,87 +23,101 @@ class DBStorage:
         'State': state.State,
         'User': user.User
     }
-
-    """ handles storage for database """
-    __engine = None
-    __session = None
-
-    def __init__(self):
-        """ creates the engine self.__engine """
-        self.__engine = create_engine(
-            'mysql+mysqldb://{}:{}@{}/{}'.format(
-                os.environ.get('HBNB_MYSQL_USER'),
-                os.environ.get('HBNB_MYSQL_PWD'),
-                os.environ.get('HBNB_MYSQL_HOST'),
-                os.environ.get('HBNB_MYSQL_DB')))
-        if os.environ.get("HBNB_ENV") == 'test':
-            Base.metadata.drop_all(self.__engine)
+    """CNC - this variable is a dictionary with:
+    keys: Class Names
+    values: Class type (used for instantiation)
+    """
+    __file_path = './dev/file.json'
+    __objects = {}
 
     def all(self, cls=None):
-        """ returns a dictionary of all objects """
-        obj_dict = {}
-        if cls:
-            obj_class = self.__session.query(self.CNC.get(cls)).all()
-            for item in obj_class:
-                key = str(item.__class__.__name__) + "." + str(item.id)
-                obj_dict[key] = item
-            return obj_dict
-        for class_name in self.CNC:
-            if class_name == 'BaseModel':
-                continue
-            obj_class = self.__session.query(
-                self.CNC.get(class_name)).all()
-            for item in obj_class:
-                key = str(item.__class__.__name__) + "." + str(item.id)
-                obj_dict[key] = item
-        return obj_dict
+        """
+            returns private attribute: __objects
+        """
+        if cls is not None:
+            new_objs = {}
+            for clsid, obj in FileStorage.__objects.items():
+                if type(obj).__name__ == cls:
+                    new_objs[clsid] = obj
+            return new_objs
+        else:
+            return FileStorage.__objects
 
     def new(self, obj):
-        """ adds objects to current database session """
-        self.__session.add(obj)
+        """
+            sets / updates in __objects the obj with key <obj class name>.id
+        """
+        bm_id = "{}.{}".format(type(obj).__name__, obj.id)
+        FileStorage.__objects[bm_id] = obj
+
+    def save(self):
+        """
+            serializes __objects to the JSON file (path: __file_path)
+        """
+        fname = FileStorage.__file_path
+        storage_d = {}
+        for bm_id, bm_obj in FileStorage.__objects.items():
+            storage_d[bm_id] = bm_obj.to_json(saving_file_storage=True)
+        with open(fname, mode='w', encoding='utf-8') as f_io:
+            json.dump(storage_d, f_io)
+
+    def reload(self):
+        """
+            if file exists, deserializes JSON file to __objects, else nothing
+        """
+        fname = FileStorage.__file_path
+        FileStorage.__objects = {}
+        try:
+            with open(fname, mode='r', encoding='utf-8') as f_io:
+                new_objs = json.load(f_io)
+        except:
+            return
+        for o_id, d in new_objs.items():
+            k_cls = d['__class__']
+            FileStorage.__objects[o_id] = FileStorage.CNC[k_cls](**d)
+
+    def delete(self, obj=None):
+        """
+            deletes obj from __objects if it's inside
+        """
+        if obj:
+            obj_ref = "{}.{}".format(type(obj).__name__, obj.id)
+            all_class_objs = self.all(obj.__class__.__name__)
+            if all_class_objs.get(obj_ref):
+                del FileStorage.__objects[obj_ref]
+            self.save()
+
+    def delete_all(self):
+        """
+            deletes all stored objects, for testing purposes
+        """
+        try:
+            with open(FileStorage.__file_path, mode='w') as f_io:
+                pass
+        except:
+            pass
+        del FileStorage.__objects
+        FileStorage.__objects = {}
+        self.save()
+
+    def close(self):
+        """
+            calls the reload() method for deserialization from JSON to objects
+        """
+        self.reload()
 
     def get(self, cls, id):
         """
-        fetches specific object
-        :param cls: class of object as string
-        :param id: id of object as string
-        :return: found object or None
+            retrieves one object based on class name and id
         """
-        all_class = self.all(cls)
-
-        for obj in all_class.values():
-            if id == str(obj.id):
-                return obj
-
+        if cls and id:
+            fetch_obj = "{}.{}".format(cls, id)
+            all_obj = self.all(cls)
+            return all_obj.get(fetch_obj)
         return None
 
     def count(self, cls=None):
         """
-        count of how many instances of a class
-        :param cls: class name
-        :return: count of instances of a class
+        count of all objects in storage
         """
-        return len(self.all(cls))
-
-    def save(self):
-        """ commits all changes of current database session """
-        self.__session.commit()
-
-    def delete(self, obj=None):
-        """ deletes obj from current database session if not None """
-        if obj is not None:
-            self.__session.delete(obj)
-
-    def reload(self):
-        """ creates all tables in database & session from engine """
-        Base.metadata.create_all(self.__engine)
-        self.__session = scoped_session(
-            sessionmaker(
-                bind=self.__engine,
-                expire_on_commit=False))
-
-    def close(self):
-        """
-            calls remove() on private session attribute (self.session)
-        """
-        self.__session.remove()
+        return (len(self.all(cls)))

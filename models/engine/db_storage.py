@@ -1,19 +1,20 @@
 #!/usr/bin/python3
 """
-Handles I/O, writing and reading, of JSON for storage of all class instances
+Database engine
 """
-import json
+
+import os
+from sqlalchemy import create_engine, MetaData
+from sqlalchemy.orm import sessionmaker, scoped_session
+from models.base_model import Base
 from models import base_model, amenity, city, place, review, state, user
-from datetime import datetime
-
-strptime = datetime.strptime
-to_json = base_model.BaseModel.to_json
 
 
-class FileStorage:
-    """handles long term storage of all class instances"""
+class DBStorage:
+    """
+        handles long term storage of all class instances
+    """
     CNC = {
-        'BaseModel': base_model.BaseModel,
         'Amenity': amenity.Amenity,
         'City': city.City,
         'Place': place.Place,
@@ -21,90 +22,111 @@ class FileStorage:
         'State': state.State,
         'User': user.User
     }
-    """CNC - this variable is a dictionary with:
-    keys: Class Names
-    values: Class type (used for instantiation)
+
     """
-    __file_path = './dev/file.json'
-    __objects = {}
+        handles storage for database
+    """
+    __engine = None
+    __session = None
+
+    def __init__(self):
+        """
+            creates the engine self.__engine
+        """
+        self.__engine = create_engine(
+            'mysql+mysqldb://{}:{}@{}/{}'.format(
+                os.environ.get('HBNB_MYSQL_USER'),
+                os.environ.get('HBNB_MYSQL_PWD'),
+                os.environ.get('HBNB_MYSQL_HOST'),
+                os.environ.get('HBNB_MYSQL_DB')))
+        if os.environ.get("HBNB_ENV") == 'test':
+            Base.metadata.drop_all(self.__engine)
 
     def all(self, cls=None):
-        """returns private attribute: __objects"""
-        if cls:
-            objects_dict = {}
-            for class_id, obj in FileStorage.__objects.items():
-                if type(obj).__name__ == cls:
-                    objects_dict[class_id] = obj
-            return objects_dict
-        return FileStorage.__objects
+        """
+           returns a dictionary of all objects
+        """
+        obj_dict = {}
+        if cls is not None:
+            a_query = self.__session.query(DBStorage.CNC[cls])
+            for obj in a_query:
+                obj_ref = "{}.{}".format(type(obj).__name__, obj.id)
+                obj_dict[obj_ref] = obj
+            return obj_dict
+
+        for c in DBStorage.CNC.values():
+            a_query = self.__session.query(c)
+            for obj in a_query:
+                obj_ref = "{}.{}".format(type(obj).__name__, obj.id)
+                obj_dict[obj_ref] = obj
+        return obj_dict
 
     def new(self, obj):
-        """sets / updates in __objects the obj with key <obj class name>.id"""
-        bm_id = "{}.{}".format(type(obj).__name__, obj.id)
-        FileStorage.__objects[bm_id] = obj
+        """
+            adds objects to current database session
+        """
+        self.__session.add(obj)
+
+    def save(self):
+        """
+            commits all changes of current database session
+        """
+        self.__session.commit()
+
+    def rollback_session(self):
+        """
+            rollsback a session in the event of an exception
+        """
+        self.__session.rollback()
+
+    def delete(self, obj=None):
+        """
+            deletes obj from current database session if not None
+        """
+        if obj:
+            self.__session.delete(obj)
+            self.save()
+
+    def delete_all(self):
+        """
+           deletes all stored objects, for testing purposes
+        """
+        for c in DBStorage.CNC.values():
+            a_query = self.__session.query(c)
+            all_objs = [obj for obj in a_query]
+            for obj in range(len(all_objs)):
+                to_delete = all_objs.pop(0)
+                to_delete.delete()
+        self.save()
+
+    def reload(self):
+        """
+           creates all tables in database & session from engine
+        """
+        Base.metadata.create_all(self.__engine)
+        self.__session = scoped_session(
+            sessionmaker(
+                bind=self.__engine,
+                expire_on_commit=False))
+
+    def close(self):
+        """
+            calls remove() on private session attribute (self.session)
+        """
+        self.__session.remove()
 
     def get(self, cls, id):
         """
-        gets specific object
-        :param cls: class
-        :param id: id of instance
-        :return: object or None
+            retrieves one object based on class name and id
         """
-        all_class = self.all(cls)
-
-        for obj in all_class.values():
-            if id == str(obj.id):
-                return obj
-
+        if cls and id:
+            fetch = "{}.{}".format(cls, id)
+            all_obj = self.all(cls)
+            return all_obj.get(fetch)
         return None
 
     def count(self, cls=None):
         """
-        count of instances
-        :param cls: class
-        :return: number of instances
+            returns the count of all objects in storage
         """
-
-        return len(self.all(cls))
-
-    def save(self):
-        """serializes __objects to the JSON file (path: __file_path)"""
-        fname = FileStorage.__file_path
-        d = {}
-        for bm_id, bm_obj in FileStorage.__objects.items():
-            d[bm_id] = bm_obj.to_json()
-        with open(fname, mode='w+', encoding='utf-8') as f_io:
-            json.dump(d, f_io)
-
-    def reload(self):
-        """if file exists, deserializes JSON file to __objects, else nothing"""
-        fname = FileStorage.__file_path
-        FileStorage.__objects = {}
-        try:
-            with open(fname, mode='r', encoding='utf-8') as f_io:
-                new_objs = json.load(f_io)
-        except:
-            return
-        for o_id, d in new_objs.items():
-            k_cls = d['__class__']
-            d.pop("__class__", None)
-            d["created_at"] = datetime.strptime(d["created_at"],
-                                                "%Y-%m-%d %H:%M:%S.%f")
-            d["updated_at"] = datetime.strptime(d["updated_at"],
-                                                "%Y-%m-%d %H:%M:%S.%f")
-            FileStorage.__objects[o_id] = FileStorage.CNC[k_cls](**d)
-
-    def delete(self, obj=None):
-        """deletes obj"""
-        if obj is None:
-            return
-        for k in list(FileStorage.__objects.keys()):
-            if obj.id == k.split(".")[1] and k.split(".")[0] in str(obj):
-                FileStorage.__objects.pop(k, None)
-                self.save()
-
-    def close(self):
-        """
-            calls the reload() method for deserialization from JSON to objects
-        """
-        self.reload()
+        return (len(self.all(cls)))
